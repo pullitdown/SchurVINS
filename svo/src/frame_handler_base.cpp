@@ -27,6 +27,7 @@
 #include <svo/direct/feature_detection_utils.h>
 #include <svo/direct/matcher.h>
 #include <svo/tracker/feature_tracker.h>
+#include <geometry_msgs/PoseStamped.h>
 
 #ifdef SVO_LOOP_CLOSING
 #include <svo/online_loopclosing/loop_closing.h>
@@ -151,7 +152,7 @@ FrameHandlerBase::FrameHandlerBase(const BaseOptions& base_options, const Reproj
     double OBS_DEV = options_.obs_dev_;
 
     schur_vins_.reset(new schur_vins::SchurVINS());                                          // init Schur VINS
-    schur_vins_->InitMaxState(WINDOW_SIZE);                                                  // init window size
+    schur_vins_->InitMaxState(WINDOW_SIZE);  
     if (cams_->getCamera(0).getType() == vk::cameras::CameraGeometryBase::Type::kPinhole) {  // init focal length
       auto instrisics = cams_->getCameraShared(0)->getIntrinsicParameters();
       double f = instrisics(0);
@@ -176,6 +177,22 @@ FrameHandlerBase::FrameHandlerBase(const BaseOptions& base_options, const Reproj
   depth_filter_.reset(new DepthFilter(depthfilter_options, detector_options2, cams_));
   initializer_ = initialization_utils::makeInitializer(init_options, tracker_options, detector_options, cams_);
   overlap_kfs_.resize(cams_->getNumCameras());
+  
+#ifdef IMU_ANALYSIS
+  bool debug_imu_analysis=1;
+  pnh_=ros::NodeHandle();
+  if (debug_imu_analysis)
+  {
+    pub_imu_propagation=pnh_.advertise<geometry_msgs::PoseStamped>("pub_imu_propagation", 10);
+    pub_imu_augmentation=pnh_.advertise<geometry_msgs::PoseStamped>("pub_imu_augmentation", 10);
+    pub_image_aligned=pnh_.advertise<geometry_msgs::PoseStamped>("pub_image_aligned", 10);
+    pub_imu_odometry=pnh_.advertise<nav_msgs::Odometry>("pub_imu_odometry", 10);
+    pub_planner_odometry=pnh_.advertise<nav_msgs::Odometry>("pub_planner_odometry", 10);
+    pnh_.param<double>("/svo/init_z_pos", this->init_z_pos, 0.32); // 读取参数，如果参数未设置，则使用默认值0.32
+
+    ROS_INFO("Initial Z position: %f", this->init_z_pos);
+  }
+#endif
 
   VLOG(1) << "SVO initialized";
 }
@@ -340,7 +357,7 @@ bool FrameHandlerBase::addFrameBundle(const FrameBundlePtr& frame_bundle)
       }
     }
   }
-
+  
     // fill in frame bundle imu measurements
 #ifdef USE_SCHUR_VINS
   if (schur_vins_ && imu_handler_) {
@@ -353,7 +370,8 @@ bool FrameHandlerBase::addFrameBundle(const FrameBundlePtr& frame_bundle)
       frame_bundle->imu_datas_ = imu_measurements;
       std::reverse(frame_bundle->imu_datas_.begin(), frame_bundle->imu_datas_.end());
       frame_bundle->imu_ready_ = true;
-
+      schur_vins_->feed_zupt_imu_datas(frame_bundle->imu_datas_);
+      
       // for (const auto& imu_data : frame_bundle->imu_datas_)
       //     LOG(INFO) << std::fixed << imu_data.timestamp_;
       // LOG(INFO) << std::fixed << "frame bundle timestamp: " << curr_frame_bundle_stamp << " "
@@ -361,6 +379,7 @@ bool FrameHandlerBase::addFrameBundle(const FrameBundlePtr& frame_bundle)
     }
   }
 #endif
+
 
   // handle motion prior
   if (have_motion_prior_)
@@ -410,10 +429,23 @@ bool FrameHandlerBase::addFrameBundle(const FrameBundlePtr& frame_bundle)
       }
     }
   }
-
+#ifdef IMU_ANALYSIS
+  VLOG(40)<<new_frames_->get_T_W_B().getPosition();
+  pub_pose(pub_imu_propagation,new_frames_->get_T_W_B(),ros::Time(new_frames_->getMinTimestampSeconds()));
+#endif
   // Perform tracking.
   update_res_ = processFrameBundle();
-
+#ifdef IMU_ANALYSIS
+  pub_pose(pub_image_aligned,new_frames_->get_T_W_B(),ros::Time(new_frames_->getMinTimestampSeconds()));
+  Eigen::Quaterniond quat;
+  Eigen::Vector3d pos;
+  Eigen::Vector3d vel;
+  Eigen::Vector3d gyr;
+  double time;
+  getSchurVinsCurrState(quat,pos,vel,gyr,time);
+  pub_odometry(pub_imu_odometry,quat,pos,vel,gyr,ros::Time(time));
+  pub_odom_odometry(pub_planner_odometry,quat,pos,vel,gyr,ros::Time(time));
+#endif
   // We start the backend first, since it is the most time crirical
   if (bundle_adjustment_)
   {
@@ -456,6 +488,11 @@ bool FrameHandlerBase::addFrameBundle(const FrameBundlePtr& frame_bundle)
   }
 #endif
 #endif
+
+  if(update_res_ == UpdateResult::KZeroVelocity)
+  {
+    VLOG(0) << "zuptupdate!";
+  }
 
   // Add keyframe to loop closing and the global map
   if (update_res_ == UpdateResult::kKeyframe)
@@ -686,40 +723,56 @@ size_t FrameHandlerBase::sparseImageAlignment()
     SVO_START_TIMER("sparse_img_align");
   }
 
-#ifdef USE_SCHUR_VINS
+// #ifdef USE_SCHUR_VINS
 
   schurvinsForward();
   if (options_.trace_statistics) {
     SVO_STOP_TIMER("sparse_img_align");
   }
+  
+
+// #else
+
+  // sparse_img_align_->reset();
+  // if (have_motion_prior_)
+  // {
+  //   VLOG(40) << "have_motion_prior_";
+  //   SVO_DEBUG_STREAM("Apply IMU Prior to Image align");
+  //   double prior_trans = options_.img_align_prior_lambda_trans;
+  //   if (map_->size() < 5)
+  //     prior_trans = 0; // during the first few frames we don't want a prior (TODO)
+  //   T_newimu_lastimu_prior_=new_frames_->get_T_W_B().inverse() * last_frames_->get_T_W_B();
+  //   sparse_img_align_->setWeightedPrior(T_newimu_lastimu_prior_, 0.0, 0.0,
+  //                                       options_.img_align_prior_lambda_rot,
+  //                                       prior_trans, 0.0, 0.0);
+  // }
+  // sparse_img_align_->setMaxNumFeaturesToAlign(options_.img_align_max_num_features);
+  // size_t img_align_n_tracked = sparse_img_align_->run(last_frames_, new_frames_);
+  // // VLOG(40) << "sparse_img_align_->run.";
+
+  // if (options_.trace_statistics)
+  // {
+  //   SVO_STOP_TIMER("sparse_img_align");
+  //   SVO_LOG("img_align_n_tracked", img_align_n_tracked);
+  // }
+  // VLOG(40) << "Sparse image alignment tracked " << img_align_n_tracked << " features.";
+
+  // svo::Transformation t_world_imu=new_frames_->get_T_W_B();
+  // Eigen::Quaterniond q_wi;
+  // Eigen::Vector3d t_wi;
+  // q_wi.x()=t_world_imu.getRotation().x();
+  // q_wi.y()=t_world_imu.getRotation().y();
+  // q_wi.z()=t_world_imu.getRotation().z();
+  // q_wi.w()=t_world_imu.getRotation().w();
+  // t_wi.x()=t_world_imu.getPosition().x();
+  // t_wi.y()=t_world_imu.getPosition().y();
+  // t_wi.z()=t_world_imu.getPosition().z();
+  // schur_vins_->SetImuState(q_wi,t_wi);
   return new_frames_->numFeatures();
 
-#else
 
-  sparse_img_align_->reset();
-  if (have_motion_prior_)
-  {
-    SVO_DEBUG_STREAM("Apply IMU Prior to Image align");
-    double prior_trans = options_.img_align_prior_lambda_trans;
-    if (map_->size() < 5)
-      prior_trans = 0; // during the first few frames we don't want a prior (TODO)
-
-    sparse_img_align_->setWeightedPrior(T_newimu_lastimu_prior_, 0.0, 0.0,
-                                        options_.img_align_prior_lambda_rot,
-                                        prior_trans, 0.0, 0.0);
-  }
-  sparse_img_align_->setMaxNumFeaturesToAlign(options_.img_align_max_num_features);
-  size_t img_align_n_tracked = sparse_img_align_->run(last_frames_, new_frames_);
-
-  if (options_.trace_statistics)
-  {
-    SVO_STOP_TIMER("sparse_img_align");
-    SVO_LOG("img_align_n_tracked", img_align_n_tracked);
-  }
-  VLOG(40) << "Sparse image alignment tracked " << img_align_n_tracked << " features.";
-  return img_align_n_tracked;
-
-#endif
+ 
+// #endif
 }
 
 //------------------------------------------------------------------------------
@@ -823,7 +876,8 @@ size_t FrameHandlerBase::projectMapInFrame()
   return n_total_ftrs;
 }
 
-void FrameHandlerBase::schurvinsForward() {
+void FrameHandlerBase::schurvinsForward() 
+{
 #ifdef USE_SCHUR_VINS
     if (schur_vins_ && imu_handler_ && new_frames_->imu_ready_) {
         schur_vins_->Forward(new_frames_);
@@ -1348,10 +1402,14 @@ void FrameHandlerBase::setBundleAdjuster(const AbstractBundleAdjustmentPtr& ba)
 void FrameHandlerBase::setImuHandler(const ImuHandlerPtr& imu_handler) {
     imu_handler_ = imu_handler;
     if (schur_vins_ && imu_handler)
+    {
         schur_vins_->InitImuModel(imu_handler_->imu_calib_.acc_noise_density,
                                   imu_handler_->imu_calib_.acc_bias_random_walk_sigma,
                                   imu_handler_->imu_calib_.gyro_noise_density,
                                   imu_handler_->imu_calib_.gyro_bias_random_walk_sigma);  // init imu instriscs
+       schur_vins_->set_imu_delay_time(imu_handler_->imu_calib_.delay_imu_cam);        
+    }                                          // init window size
+
 }
 
 std::vector<FramePtr> FrameHandlerBase::closeKeyframes() const

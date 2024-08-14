@@ -68,7 +68,7 @@ void FrameHandlerStereo::addImages(
 
 UpdateResult FrameHandlerStereo::processFirstFrame()
 {
-  schurvinsForward();
+  schurvinsForward();// use the imu measrument update the imu state
   if(initializer_->addFrameBundle(new_frames_) == InitResult::kFailure)
   {
     SVO_ERROR_STREAM("Initialization failed. Not enough triangulated points.");
@@ -84,7 +84,7 @@ UpdateResult FrameHandlerStereo::processFirstFrame()
 
   frame_utils::getSceneDepth(new_frames_->at(0), depth_median_, depth_min_, depth_max_);
   depth_filter_->addKeyframe(new_frames_->at(0), depth_median_, 0.5*depth_min_, depth_median_*1.5);
-  schurvinsBackward();
+  schurvinsBackward();//use the 
 
   LOG(INFO) << std::fixed << "InitState: " << new_frames_->getMinTimestampSeconds()
             << ", quat: " << new_frames_->get_T_W_B().getEigenQuaternion().w() << ", "
@@ -104,10 +104,25 @@ UpdateResult FrameHandlerStereo::processFrame()
 {
   // ---------------------------------------------------------------------------
   // tracking
+  if (new_frames_->imu_ready_ )
+  {
+    bool is_zuptupdate=schur_vins_->try_zerovelocity_update(new_frames_->getMinTimestampSeconds());
+    if(is_zuptupdate) {
+      Eigen::Quaterniond quat_; Eigen::Vector3d pos_;Eigen::Vector3d vel_;Eigen::Vector3d gyr_; double time_;
+          schur_vins_->GetImuState(quat_, pos_, vel_,gyr_, time_);
 
+        svo::Transformation T_world_imu = svo::Transformation(quat_, pos_);
+        for (const svo::FramePtr &frame : new_frames_->frames_)
+        {
+            frame->T_f_w_ = frame->T_cam_imu() * T_world_imu.inverse();
+        }
+            return UpdateResult::KZeroVelocity;
+        }
+  }
+  
   // STEP 1: Sparse Image Align
   size_t n_tracked_features = 0;
-  sparseImageAlignment();
+  sparseImageAlignment();//schurvins remove image sparse alignment ，and add image sparse alignment would cause bad jump update
 
   // STEP 2: Map Reprojection & Feature Align
   n_tracked_features = projectMapInFrame();
@@ -120,6 +135,7 @@ UpdateResult FrameHandlerStereo::processFrame()
   if(bundle_adjustment_type_!=BundleAdjustmentType::kCeres)
   {
     n_tracked_features = optimizePose();
+
     if(n_tracked_features < options_.quality_min_fts)
     {
       return makeKeyframe(); // force stereo triangulation to recover
@@ -127,6 +143,10 @@ UpdateResult FrameHandlerStereo::processFrame()
     optimizeStructure(new_frames_, options_.structure_optimization_max_pts, 5);
   }
   // return if tracking bad
+  
+
+
+
   setTrackingQuality(n_tracked_features);
   if(tracking_quality_ == TrackingQuality::kInsufficient)
   {

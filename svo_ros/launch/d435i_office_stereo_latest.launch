@@ -1,0 +1,43 @@
+<!-- Launch File for running svo with ceres backend from bag-file -->
+<launch>
+<!-- 内参 参数 -->
+
+
+  <node pkg="legged_imu_filter" type="filter_node" name="filter_node_"  output="screen">
+        
+        <param name="apply_filter_imu_topic"  type="string"  value="/camera/filter_imu" />
+        <param name="source_imu_topic"  type="string"  value="/camera/imu"/>
+        <param name="filter_num" type="int" value="1" />
+  
+  </node>
+
+  <arg name="calib_file" default="$(find svo_ros)/param/calib/realsense_stereo_best.yaml"/>
+
+  <!-- SVO node -->
+  <node pkg="svo_ros" type="svo_node" name="svo" clear_params="true" output="screen" args="--v=41">
+
+    <!-- Camera topic to subscribe to -->
+    <param name="cam0_topic" value="/camera/infra1/image_rect_raw" type="str" />
+    <param name="cam1_topic" value="/camera/infra2/image_rect_raw" type="str" />
+	
+    <!-- Imu topic to subscribe to -->
+    <param name="imu_topic" value="/camera/filter_imu" type="str" />
+
+    <param name="init_z_pos" value="0.6" type="double" />
+    <!-- Camera calibration file -->
+    <param name="calib_file" value="$(arg calib_file)" />
+
+    <!--Parameters-->
+    <rosparam file="$(find svo_ros)/param/vio_stereo.yaml" />
+    <param name='runlc' value='false' />
+
+  </node>
+
+  <!-- <node pkg="pc_sense" type="pc_project_ros" name="pcpn">
+    <rosparam file="$(find pc_sense)/param/plane.yaml" />
+  </node> -->
+  <!-- RVIZ -->
+  <node name="vis" pkg="rviz" type="rviz" args=" -d $(find svo_ros)/rviz_config.rviz" />
+  <node name="svo_gui" pkg="rqt_gui" type="rqt_gui" args="-s rqt_svo.svo.Svo --args --topic svo" />
+
+</launch>

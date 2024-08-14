@@ -38,8 +38,9 @@ public:
   /// Accelerometer bias random walk (sigma). [m/s^3*1/sqrt(Hz)]
   double acc_bias_random_walk_sigma = 0.012589254;
 
-  /// Norm of the Gravitational acceleration. [m/s^2]
-  double gravity_magnitude = 9.81007;
+  /// Norm of the Gravitational acceleration. [m/s^2]9.7833
+  // double gravity_magnitude = 9.81007;
+  double gravity_magnitude = 9.7833;
 
   /// Coriolis acceleration (earth rotation rate).
   Eigen::Vector3d omega_coriolis = Eigen::Vector3d::Zero();

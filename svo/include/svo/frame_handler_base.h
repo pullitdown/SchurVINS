@@ -18,7 +18,7 @@
 
 #include <vikit/timer.h>
 #include <vikit/ringbuffer.h>
-
+#include "schur_vins.h" 
 #include <vikit/params_helper.h>
 #include <vikit/cameras/ncamera.h>
 #include <rpg_common/callback_host.h>
@@ -27,6 +27,10 @@
 #include "svo/map.h"
 #include "svo/global.h"
 
+#include <geometry_msgs/PoseStamped.h>
+#include <nav_msgs/Odometry.h>
+
+#define IMU_ANALYSIS
 // forward declarations:
 namespace vk
 {
@@ -133,7 +137,7 @@ struct BaseOptions
   /// If you choose to extract many features then sparse image alignment may
   /// become too slow. You can limit the number of features for this step with
   /// this parameter to randomly sample N features that are used for alignment.
-  size_t img_align_max_num_features = 0;
+  size_t img_align_max_num_features = 100;
 
   /// Whether or not to include the distortion when calculating the jacobian.
   /// For small FoV pinhole projection, it is safe to leave it as false.
@@ -238,7 +242,8 @@ EnumClassHash>  kTrackingQualityName;
 enum class UpdateResult {
   kDefault,
   kKeyframe,
-  kFailure
+  kFailure,
+  KZeroVelocity
 };
 extern const std::unordered_map<svo::UpdateResult, std::string, EnumClassHash>
 kUpdateResultName;
@@ -282,6 +287,8 @@ public:
 
   /// Will reset the map as soon as the current frame is finished processing.
   void reset() { set_reset_ = true; }
+
+
 
   /// Get the current stage of the algorithm.
   inline Stage stage() const { return stage_; }
@@ -380,6 +387,12 @@ public:
   /// Set compensation parameters.
   void setCompensation(const bool do_compensation);
 
+
+  inline void getSchurVinsCurrState(Eigen::Quaterniond &quat, Eigen::Vector3d &pos, Eigen::Vector3d &vel, Eigen::Vector3d &gyr,double &time)
+  {
+    schur_vins_->GetImuState(quat, pos, vel, gyr,time);
+
+  }
   /// Set the first frame (used for synthetic datasets in benchmark node)
   virtual void setFirstFrames(const std::vector<FramePtr>& first_frames);
 
@@ -421,6 +434,102 @@ public:
   DepthFilterPtr depth_filter_;
   InitializerPtr initializer_;
   ImuHandlerPtr imu_handler_;
+
+  
+#ifdef IMU_ANALYSIS
+  void pub_pose(ros::Publisher & publisher_,Transformation tf,ros::Time time,std::string frame_id="world")
+  { 
+    geometry_msgs::PoseStampedPtr msg_pose(new geometry_msgs::PoseStamped);
+    msg_pose->header.stamp = time;
+    msg_pose->header.frame_id = frame_id;
+    auto p=tf.getPosition();
+    auto q=tf.getRotation();
+    msg_pose->pose.position.x = p[0];
+    msg_pose->pose.position.y = p[1];
+    msg_pose->pose.position.z = p[2];
+    msg_pose->pose.orientation.x = q.x();
+    msg_pose->pose.orientation.y = q.y();
+    msg_pose->pose.orientation.z = q.z();
+    msg_pose->pose.orientation.w = q.w();
+    
+    publisher_.publish(msg_pose);
+  }
+  
+void pub_odometry(ros::Publisher &publisher_, const Eigen::Quaterniond &quat, const Eigen::Vector3d &pos, const Eigen::Vector3d &vel,const Eigen::Vector3d &gyr,  ros::Time time, std::string frame_id="world")
+{
+
+
+    nav_msgs::OdometryPtr msg_odom(new nav_msgs::Odometry);
+    msg_odom->header.stamp = time;
+    msg_odom->header.frame_id = frame_id;  // The frame in which the pose is referenced
+
+    // Set position
+    msg_odom->pose.pose.position.x = pos[0];
+    msg_odom->pose.pose.position.y = pos[1];
+    msg_odom->pose.pose.position.z = pos[2];
+
+    // Set orientation
+    msg_odom->pose.pose.orientation.x = quat.x();
+    msg_odom->pose.pose.orientation.y = quat.y();
+    msg_odom->pose.pose.orientation.z = quat.z();
+    msg_odom->pose.pose.orientation.w = quat.w();
+
+    // Set linear velocity
+    msg_odom->twist.twist.linear.x = vel[0];
+    msg_odom->twist.twist.linear.y = vel[1];
+    msg_odom->twist.twist.linear.z = vel[2];
+
+    // Set angular velocity (if available, here assumed zero)
+    msg_odom->twist.twist.angular.x = gyr[0];
+    msg_odom->twist.twist.angular.y = gyr[1];
+    msg_odom->twist.twist.angular.z = gyr[2];
+    // Publish the odometry message
+    publisher_.publish(msg_odom);
+}
+
+
+void pub_odom_odometry(ros::Publisher &publisher_, const Eigen::Quaterniond &quat, const Eigen::Vector3d &pos, const Eigen::Vector3d &vel,const Eigen::Vector3d &gyr,  ros::Time time, std::string frame_id="world")
+{
+
+
+
+    nav_msgs::OdometryPtr msg_odom(new nav_msgs::Odometry);
+    msg_odom->header.stamp = time;
+    msg_odom->header.frame_id = frame_id;  // The frame in which the pose is referenced
+    Eigen::Matrix3d rot;
+    rot << 0.0, -1, 0,
+       0., 0., -1,
+       1, 0, 0;
+// 将旋转矩阵转换为四元数
+    Eigen::Quaterniond rot_quat(rot);
+    // Set position
+
+    rot_quat=quat*rot_quat;
+    msg_odom->pose.pose.position.x = pos[0];
+    msg_odom->pose.pose.position.y = pos[1];
+    msg_odom->pose.pose.position.z = this->init_z_pos;
+
+    // Set orientation
+    msg_odom->pose.pose.orientation.x = rot_quat.x();
+    msg_odom->pose.pose.orientation.y = rot_quat.y();
+    msg_odom->pose.pose.orientation.z = rot_quat.z();
+    msg_odom->pose.pose.orientation.w = rot_quat.w();
+
+    // Set linear velocity
+    msg_odom->twist.twist.linear.x = vel[0];
+    msg_odom->twist.twist.linear.y = vel[1];
+    msg_odom->twist.twist.linear.z = vel[2];
+
+    // Set angular velocity (if available, here assumed zero)
+    msg_odom->twist.twist.angular.x = gyr[0];
+    msg_odom->twist.twist.angular.y = gyr[1];
+    msg_odom->twist.twist.angular.z = gyr[2];
+    // Publish the odometry message
+    publisher_.publish(msg_odom);
+}
+
+#endif
+
 #ifdef SVO_LOOP_CLOSING
   LoopClosingPtr lc_;
   size_t loop_closing_counter_ = 0;
@@ -531,6 +640,18 @@ protected:
   // status for loss
   bool loss_without_correction_ = false;
   double last_good_tracking_time_sec_ = -1.0;
+  double init_z_pos;
+
+#ifdef IMU_ANALYSIS
+  ros::NodeHandle pnh_;
+
+  ros::Publisher pub_imu_propagation;
+  ros::Publisher pub_imu_augmentation;
+  ros::Publisher pub_image_aligned;
+  ros::Publisher pub_imu_odometry;
+  ros::Publisher pub_planner_odometry;
+
+#endif
 };
 
 } // namespace nslam

@@ -64,6 +64,9 @@ private:
   ros::Publisher pub_imu_pose_viz_;
   ros::Publisher pub_points_;
 
+  // //publisher different step pose data
+  // ros::Publisher pub_prope_imu_pos;
+  // ros::Publisher pub_aruge_imu_pos;
   // publisher functions
   void publishImuPose(const ViNodeState& state, const int64_t timestamp,
                       const int32_t seq);

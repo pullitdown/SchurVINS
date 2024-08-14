@@ -16,7 +16,7 @@ void SvoNodeBase::initThirdParty(int argc, char **argv)
   google::InitGoogleLogging(argv[0]);
   google::ParseCommandLineFlags(&argc, &argv, true);
   google::InstallFailureSignalHandler();
-  google::SetStderrLogging(google::GLOG_ERROR);
+  google::SetStderrLogging(google::GLOG_INFO);
   // google::SetLogDestination(google::GLOG_INFO, "logs/");
 
   ros::init(argc, argv, "svo");

@@ -1,0 +1,36 @@
+<!-- Launch File for running svo with ceres backend from bag-file -->
+<launch>
+<!-- 内参 参数 -->
+
+
+
+  <arg name="calib_file" default="$(find svo_ros)/param/calib/realsense_d435i_stereo_best.yaml"/>
+
+  <!-- SVO node -->
+  <node pkg="svo_ros" type="svo_node" name="svo" clear_params="true" output="screen" args="--v=0">
+
+    <!-- Camera topic to subscribe to -->
+    <param name="cam0_topic" value="/camera/infra1/image_rect_raw" type="str" />
+    <param name="cam1_topic" value="/camera/infra2/image_rect_raw" type="str" />
+	
+    <!-- Imu topic to subscribe to -->
+    <param name="imu_topic" value="/camera/imu" type="str" />
+
+    <!-- Camera calibration file -->
+    <param name="calib_file" value="$(arg calib_file)" />
+    <param name="init_z_pos" value="0.3" type="double" />
+
+    <!--Parameters-->
+    <rosparam file="$(find svo_ros)/param/vio_stereo.yaml" />
+    <param name='runlc' value='false' />
+
+  </node>
+
+  <!-- <node pkg="pc_sense" type="pc_project_ros" name="pcpn">
+    <rosparam file="$(find pc_sense)/param/plane.yaml" />
+  </node> -->
+  <!-- RVIZ -->
+  <node name="vis" pkg="rviz" type="rviz" args=" -d $(find svo_ros)/rviz_config.rviz" />
+  <node name="svo_gui" pkg="rqt_gui" type="rqt_gui" args="-s rqt_svo.svo.Svo --args --topic svo" />
+
+</launch>
